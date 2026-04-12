@@ -1,6 +1,6 @@
 mod swc;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::os::raw::c_void;
 use std::process::Command;
@@ -31,6 +31,7 @@ thread_local! {
     static WINDOW_SPAWN_INDEX: Cell<u32> = const { Cell::new(0) };
     static MOVING_WINDOW: Cell<*mut Window> = const { Cell::new(ptr::null_mut()) };
     static RESIZING_WINDOW: Cell<*mut Window> = const { Cell::new(ptr::null_mut()) };
+    static FOCUS_HISTORY: RefCell<Vec<*mut Window>> = const { RefCell::new(Vec::new()) };
 }
 
 fn get_display() -> *mut wl_display {
@@ -71,6 +72,60 @@ fn get_resizing_window() -> *mut Window {
 
 fn set_resizing_window(window: *mut Window) {
     RESIZING_WINDOW.with(|w| w.set(window));
+}
+
+fn note_window_focus(window: *mut Window) {
+    if window.is_null() {
+        return;
+    }
+
+    FOCUS_HISTORY.with(|history| {
+        let mut history = history.borrow_mut();
+        history.retain(|&w| w != window);
+        history.push(window);
+    });
+}
+
+fn remove_window_from_focus_history(window: *mut Window) {
+    if window.is_null() {
+        return;
+    }
+
+    FOCUS_HISTORY.with(|history| {
+        history.borrow_mut().retain(|&w| w != window);
+    });
+}
+
+fn last_active_window_on_screen(screen: *mut Screen, excluding: *mut Window) -> *mut Window {
+    if screen.is_null() {
+        return ptr::null_mut();
+    }
+
+    let from_history = FOCUS_HISTORY.with(|history| {
+        let history = history.borrow();
+
+        history.iter().rev().copied().find(|&candidate| {
+            if candidate.is_null() || candidate == excluding {
+                return false;
+            }
+
+            unsafe { (*candidate).screen == screen }
+        })
+    });
+
+    if let Some(window) = from_history {
+        return window;
+    }
+
+    unsafe {
+        for &candidate in (*screen).windows.iter().rev() {
+            if !candidate.is_null() && candidate != excluding {
+                return candidate;
+            }
+        }
+    }
+
+    ptr::null_mut()
 }
 
 fn next_spawn_index() -> u32 {
@@ -354,6 +409,7 @@ fn focus(window: *mut Window) {
     }
 
     set_focused_window(window);
+    note_window_focus(window);
 }
 
 fn focus_next(screen: *mut Screen, window: *mut Window) {
@@ -507,6 +563,7 @@ static SCREEN_HANDLER: swc_screen_handler = swc_screen_handler {
 unsafe extern "C" fn window_destroy(data: *mut c_void) {
     let window = data as *mut Window;
     let screen = unsafe { (*window).screen };
+    let was_focused = get_focused_window() == window;
 
     if get_moving_window() == window {
         set_moving_window(ptr::null_mut());
@@ -515,26 +572,20 @@ unsafe extern "C" fn window_destroy(data: *mut c_void) {
         set_resizing_window(ptr::null_mut());
     }
 
-    if get_focused_window() == window && !screen.is_null() {
-        let next_focus = unsafe {
-            let s = &*screen;
-            let mut next_focus: *mut Window = ptr::null_mut();
+    remove_window_from_focus_history(window);
 
-            for (i, &w) in s.windows.iter().enumerate() {
-                if w == window {
-                    if i + 1 < s.windows.len() && s.windows[i + 1] != window {
-                        next_focus = s.windows[i + 1];
-                    } else if i > 0 && s.windows[i - 1] != window {
-                        next_focus = s.windows[i - 1];
-                    }
-                    break;
-                }
-            }
-
-            next_focus
+    if was_focused {
+        let next_focus = if !screen.is_null() {
+            last_active_window_on_screen(screen, window)
+        } else {
+            ptr::null_mut()
         };
 
         focus(next_focus);
+
+        if !screen.is_null() && !next_focus.is_null() {
+            pan_screen_to_window(screen, next_focus);
+        }
     }
 
     if !screen.is_null() {
@@ -657,7 +708,12 @@ unsafe extern "C" fn new_window(swc: *mut swc_window) {
     if !active_screen.is_null() {
         screen_add_window(active_screen, window);
     }
+
     focus(window);
+
+    if !active_screen.is_null() {
+        pan_screen_to_window(active_screen, window);
+    }
 }
 
 static MANAGER: swc_manager = swc_manager {
