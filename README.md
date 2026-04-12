@@ -24,4 +24,6 @@
 
 # STATUS
 
-![Recording](./assets/recording.mp4)
+![Recording](./assets/recording.gif)
+
+[Watch MP4](./assets/recording.mp4)
