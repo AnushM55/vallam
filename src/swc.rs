@@ -15,6 +15,23 @@ pub type pid_t = i32;
 // Opaque libswc types
 pub enum libinput_device {}
 
+// --- libinput config constants ---
+
+pub const LIBINPUT_CONFIG_STATUS_SUCCESS: c_int = 0;
+
+pub const LIBINPUT_CONFIG_TAP_DISABLED: c_int = 0;
+pub const LIBINPUT_CONFIG_TAP_ENABLED: c_int = 1;
+
+pub const LIBINPUT_CONFIG_DRAG_DISABLED: c_int = 0;
+pub const LIBINPUT_CONFIG_DRAG_ENABLED: c_int = 1;
+
+pub const LIBINPUT_CONFIG_DWT_DISABLED: c_int = 0;
+pub const LIBINPUT_CONFIG_DWT_ENABLED: c_int = 1;
+
+pub const LIBINPUT_CONFIG_CLICK_METHOD_NONE: c_uint = 0;
+pub const LIBINPUT_CONFIG_CLICK_METHOD_BUTTON_AREAS: c_uint = 1 << 0;
+pub const LIBINPUT_CONFIG_CLICK_METHOD_CLICKFINGER: c_uint = 1 << 1;
+
 // --- Rectangles ---
 
 #[repr(C)]
@@ -124,12 +141,15 @@ pub const XKB_KEY_Return: u32 = 0xff0d;
 pub const XKB_KEY_r: u32 = 0x0072;
 pub const XKB_KEY_q: u32 = 0x0071;
 pub const XKB_KEY_space: u32 = 0x0020;
+pub const XKB_KEY_h: u32 = 0x0068;
 pub const XKB_KEY_j: u32 = 0x006a;
 pub const XKB_KEY_k: u32 = 0x006b;
+pub const XKB_KEY_l: u32 = 0x006c;
 pub const XKB_KEY_f: u32 = 0x0066;
 pub const XKB_KEY_Escape: u32 = 0xff1b;
 pub const XKB_KEY_Tab: u32 = 0xff09;
 pub const XKB_KEY_d: u32 = 0x0064;
+pub const XKB_KEY_m: u32 = 0x006d;
 pub const XKB_KEY_minus: u32 = 0x002d;
 pub const XKB_KEY_equal: u32 = 0x003d;
 pub const XKB_KEY_0: u32 = 0x0030;
@@ -222,6 +242,34 @@ extern "C" {
 
     // Wallpaper
     pub fn swc_wallpaper_color_set(color: u32);
+}
+
+// libinput device configuration
+#[link(name = "input")]
+extern "C" {
+    pub fn libinput_device_get_name(device: *mut libinput_device) -> *const c_char;
+
+    pub fn libinput_device_config_tap_get_finger_count(device: *mut libinput_device) -> c_int;
+    pub fn libinput_device_config_tap_set_enabled(
+        device: *mut libinput_device,
+        enable: c_int,
+    ) -> c_int;
+    pub fn libinput_device_config_tap_set_drag_enabled(
+        device: *mut libinput_device,
+        enable: c_int,
+    ) -> c_int;
+
+    pub fn libinput_device_config_click_get_methods(device: *mut libinput_device) -> c_uint;
+    pub fn libinput_device_config_click_set_method(
+        device: *mut libinput_device,
+        method: c_uint,
+    ) -> c_int;
+
+    pub fn libinput_device_config_dwt_is_available(device: *mut libinput_device) -> c_int;
+    pub fn libinput_device_config_dwt_set_enabled(
+        device: *mut libinput_device,
+        enable: c_int,
+    ) -> c_int;
 }
 
 // Wayland server functions
