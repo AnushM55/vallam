@@ -118,27 +118,52 @@ fn place_window(screen: *mut Screen, window: *mut Window) {
             .max(320)
             .min(usable.height);
 
+        let step = 28u32;
+        let cycle = 8u32;
+        let offset = (next_spawn_index() % cycle) as i32 * step as i32;
+
+        let focused = get_focused_window();
+        if !focused.is_null() && focused != window && (*focused).screen == screen {
+            let fw = &*focused;
+            if !fw.fullscreen {
+                let mut active_geo = swc_rectangle {
+                    x: 0,
+                    y: 0,
+                    width: 0,
+                    height: 0,
+                };
+
+                if swc_window_get_geometry(fw.swc, &mut active_geo) {
+                    let gap = 36;
+                    let x = active_geo.x + active_geo.width as i32 + gap + offset;
+                    let y = active_geo.y + offset / 2;
+
+                    swc_window_set_geometry(
+                        (*window).swc,
+                        &swc_rectangle {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                    );
+                    return;
+                }
+            }
+        }
+
         let base_x = usable.x + ((usable.width - width) / 2) as i32;
         let base_y = usable.y + ((usable.height - height) / 2) as i32;
 
-        let step = 28u32;
-        let cycle = 8u32;
-        let offset = (next_spawn_index() % cycle) * step;
-
-        let max_x = usable.x + (usable.width - width) as i32;
-        let max_y = usable.y + (usable.height - height) as i32;
-
-        let x = (base_x + offset as i32).min(max_x);
-        let y = (base_y + offset as i32).min(max_y);
-
-        let geometry = swc_rectangle {
-            x,
-            y,
-            width,
-            height,
-        };
-
-        swc_window_set_geometry((*window).swc, &geometry);
+        swc_window_set_geometry(
+            (*window).swc,
+            &swc_rectangle {
+                x: base_x + offset,
+                y: base_y + offset,
+                width,
+                height,
+            },
+        );
     }
 }
 
@@ -232,6 +257,27 @@ const MOVE_STEP: i32 = 64;
 const RESIZE_STEP: i32 = 48;
 const MIN_WINDOW_WIDTH: i32 = 120;
 const MIN_WINDOW_HEIGHT: i32 = 90;
+const DEFAULT_BACKGROUND_COLOR: u32 = 0xff101418;
+
+fn parse_color_argb(value: &str) -> Option<u32> {
+    let cleaned = value.trim().trim_start_matches('#');
+
+    match cleaned.len() {
+        6 => u32::from_str_radix(cleaned, 16)
+            .ok()
+            .map(|rgb| 0xff000000 | rgb),
+        8 => u32::from_str_radix(cleaned, 16).ok(),
+        _ => None,
+    }
+}
+
+fn configured_background_color() -> u32 {
+    std::env::var("WM15_BG")
+        .ok()
+        .as_deref()
+        .and_then(parse_color_argb)
+        .unwrap_or(DEFAULT_BACKGROUND_COLOR)
+}
 
 fn move_focused_window(dx: i32, dy: i32) {
     let focused = get_focused_window();
@@ -1024,6 +1070,11 @@ fn main() {
     if !unsafe { swc_initialize(display, ptr::null_mut(), &MANAGER) } {
         eprintln!("Failed to initialize swc");
         std::process::exit(1);
+    }
+
+    let background = configured_background_color();
+    unsafe {
+        swc_wallpaper_color_set(background);
     }
 
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_Return, Some(spawn_st));
