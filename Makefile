@@ -23,11 +23,15 @@ $(NEUSWC_BUILDDIR)/build.ninja: $(NEUSWC_DIR)
 
 install: all
 	install -Dm755 target/release/wm15 $(DESTDIR)$(PREFIX)/bin/wm15
+	install -Dm755 scripts/wm15-wayrec $(DESTDIR)$(PREFIX)/bin/wm15-wayrec
+	install -Dm755 $(NEUSWC_BUILDDIR)/extra/swcsnap $(DESTDIR)$(PREFIX)/bin/swcsnap
 	install -Dm644 $(NEUSWC_BUILDDIR)/libswc/libswc.so $(DESTDIR)$(PREFIX)/lib/libswc.so
 	ldconfig 2>/dev/null || true
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/wm15
+	rm -f $(DESTDIR)$(PREFIX)/bin/wm15-wayrec
+	rm -f $(DESTDIR)$(PREFIX)/bin/swcsnap
 	rm -f $(DESTDIR)$(PREFIX)/lib/libswc.so
 	ldconfig 2>/dev/null || true
 

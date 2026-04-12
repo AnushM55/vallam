@@ -3,6 +3,7 @@ mod swc;
 use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::os::raw::c_void;
+use std::path::Path;
 use std::process::Command;
 use std::ptr;
 
@@ -22,6 +23,8 @@ struct Window {
     fullscreen: bool,
     saved_geometry: swc_rectangle,
     has_saved_geometry: bool,
+    last_geometry: swc_rectangle,
+    has_last_geometry: bool,
 }
 
 thread_local! {
@@ -136,6 +139,46 @@ fn next_spawn_index() -> u32 {
     })
 }
 
+fn cache_window_geometry(window: *mut Window, geometry: swc_rectangle) {
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        (*window).last_geometry = geometry;
+        (*window).has_last_geometry = geometry.width > 0 && geometry.height > 0;
+    }
+}
+
+fn current_window_geometry(window: *mut Window) -> Option<swc_rectangle> {
+    if window.is_null() {
+        return None;
+    }
+
+    unsafe {
+        let mut geo = swc_rectangle {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+
+        if swc_window_get_geometry((*window).swc, &mut geo) && geo.width > 0 && geo.height > 0 {
+            cache_window_geometry(window, geo);
+            return Some(geo);
+        }
+
+        if (*window).has_last_geometry
+            && (*window).last_geometry.width > 0
+            && (*window).last_geometry.height > 0
+        {
+            return Some((*window).last_geometry);
+        }
+    }
+
+    None
+}
+
 // --- Floating placement helpers ---
 
 fn update_fullscreen_windows(screen: *mut Screen) {
@@ -153,6 +196,7 @@ fn update_fullscreen_windows(screen: *mut Screen) {
                     height: sg.height,
                 };
                 swc_window_set_geometry(w.swc, &geo);
+                cache_window_geometry(win_ptr, geo);
             }
         }
     }
@@ -181,27 +225,20 @@ fn place_window(screen: *mut Screen, window: *mut Window) {
         if !focused.is_null() && focused != window && (*focused).screen == screen {
             let fw = &*focused;
             if !fw.fullscreen {
-                let mut active_geo = swc_rectangle {
-                    x: 0,
-                    y: 0,
-                    width: 0,
-                    height: 0,
-                };
-
-                if swc_window_get_geometry(fw.swc, &mut active_geo) {
+                if let Some(active_geo) = current_window_geometry(focused) {
                     let gap = 36;
                     let x = active_geo.x + active_geo.width as i32 + gap + offset;
                     let y = active_geo.y + offset / 2;
 
-                    swc_window_set_geometry(
-                        (*window).swc,
-                        &swc_rectangle {
-                            x,
-                            y,
-                            width,
-                            height,
-                        },
-                    );
+                    let geo = swc_rectangle {
+                        x,
+                        y,
+                        width,
+                        height,
+                    };
+
+                    swc_window_set_geometry((*window).swc, &geo);
+                    cache_window_geometry(window, geo);
                     return;
                 }
             }
@@ -209,16 +246,15 @@ fn place_window(screen: *mut Screen, window: *mut Window) {
 
         let base_x = usable.x + ((usable.width - width) / 2) as i32;
         let base_y = usable.y + ((usable.height - height) / 2) as i32;
+        let geo = swc_rectangle {
+            x: base_x + offset,
+            y: base_y + offset,
+            width,
+            height,
+        };
 
-        swc_window_set_geometry(
-            (*window).swc,
-            &swc_rectangle {
-                x: base_x + offset,
-                y: base_y + offset,
-                width,
-                height,
-            },
-        );
+        swc_window_set_geometry((*window).swc, &geo);
+        cache_window_geometry(window, geo);
     }
 }
 
@@ -346,15 +382,16 @@ fn move_focused_window(dx: i32, dy: i32) {
             return;
         }
 
-        let mut geo = swc_rectangle {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        };
+        if let Some(geo) = current_window_geometry(focused) {
+            let moved_geo = swc_rectangle {
+                x: geo.x + dx,
+                y: geo.y + dy,
+                width: geo.width,
+                height: geo.height,
+            };
 
-        if swc_window_get_geometry(w.swc, &mut geo) {
-            swc_window_set_position(w.swc, geo.x + dx, geo.y + dy);
+            swc_window_set_position(w.swc, moved_geo.x, moved_geo.y);
+            cache_window_geometry(focused, moved_geo);
         }
     }
 }
@@ -371,21 +408,23 @@ fn resize_focused_window(dw: i32, dh: i32) {
             return;
         }
 
-        let mut geo = swc_rectangle {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        };
-
-        if !swc_window_get_geometry(w.swc, &mut geo) {
+        let Some(geo) = current_window_geometry(focused) else {
             return;
-        }
+        };
 
         let new_width = (geo.width as i32 + dw).max(MIN_WINDOW_WIDTH) as u32;
         let new_height = (geo.height as i32 + dh).max(MIN_WINDOW_HEIGHT) as u32;
 
         swc_window_set_size(w.swc, new_width, new_height);
+        cache_window_geometry(
+            focused,
+            swc_rectangle {
+                x: geo.x,
+                y: geo.y,
+                width: new_width,
+                height: new_height,
+            },
+        );
     }
 }
 
@@ -493,16 +532,9 @@ fn pan_screen_to_window(screen: *mut Screen, target: *mut Window) {
             return;
         }
 
-        let mut target_geo = swc_rectangle {
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        };
-
-        if !swc_window_get_geometry((*target).swc, &mut target_geo) {
+        let Some(target_geo) = current_window_geometry(target) else {
             return;
-        }
+        };
 
         let usable = &(*(*screen).swc).usable_geometry;
         let screen_center_x = usable.x + (usable.width / 2) as i32;
@@ -523,20 +555,20 @@ fn pan_screen_to_window(screen: *mut Screen, target: *mut Window) {
                 continue;
             }
 
-            let w = &*win_ptr;
-            if w.fullscreen {
+            if (*win_ptr).fullscreen {
                 continue;
             }
 
-            let mut geo = swc_rectangle {
-                x: 0,
-                y: 0,
-                width: 0,
-                height: 0,
-            };
+            if let Some(geo) = current_window_geometry(win_ptr) {
+                let moved_geo = swc_rectangle {
+                    x: geo.x + dx,
+                    y: geo.y + dy,
+                    width: geo.width,
+                    height: geo.height,
+                };
 
-            if swc_window_get_geometry(w.swc, &mut geo) {
-                swc_window_set_position(w.swc, geo.x + dx, geo.y + dy);
+                swc_window_set_position((*win_ptr).swc, moved_geo.x, moved_geo.y);
+                cache_window_geometry(win_ptr, moved_geo);
             }
         }
     }
@@ -697,6 +729,13 @@ unsafe extern "C" fn new_window(swc: *mut swc_window) {
             height: 0,
         },
         has_saved_geometry: false,
+        last_geometry: swc_rectangle {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        },
+        has_last_geometry: false,
     }));
 
     unsafe {
@@ -889,6 +928,27 @@ unsafe extern "C" fn spawn_dmenu(_data: *mut c_void, _time: u32, _value: u32, st
     Command::new("wofi").args(["--show", "drun"]).spawn().ok();
 }
 
+unsafe extern "C" fn toggle_screen_recording(
+    _data: *mut c_void,
+    _time: u32,
+    _value: u32,
+    state: u32,
+) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("WM15_WAYREC_CMD").unwrap_or_else(|_| {
+        if Path::new("scripts/wm15-wayrec").exists() {
+            "scripts/wm15-wayrec".to_string()
+        } else {
+            "wm15-wayrec".to_string()
+        }
+    });
+
+    Command::new("sh").arg("-c").arg(command).spawn().ok();
+}
+
 unsafe extern "C" fn quit(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
     if state != 1 {
         return;
@@ -965,6 +1025,7 @@ unsafe extern "C" fn toggle_fullscreen(_data: *mut c_void, _time: u32, _value: u
 
             if w.has_saved_geometry {
                 swc_window_set_geometry(w.swc, &w.saved_geometry);
+                cache_window_geometry(focused, w.saved_geometry);
             } else {
                 place_window(w.screen, focused);
             }
@@ -993,6 +1054,7 @@ unsafe extern "C" fn toggle_fullscreen(_data: *mut c_void, _time: u32, _value: u
                 height: usable.height,
             };
             swc_window_set_geometry(w.swc, &fullscreen_geo);
+            cache_window_geometry(focused, fullscreen_geo);
         }
     }
 }
@@ -1135,6 +1197,11 @@ fn main() {
 
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_Return, Some(spawn_st));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_d, Some(spawn_dmenu));
+    add_key_binding(
+        SWC_MOD_LOGO | SWC_MOD_SHIFT,
+        XKB_KEY_r,
+        Some(toggle_screen_recording),
+    );
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_q, Some(quit));
     add_key_binding(SWC_MOD_LOGO | SWC_MOD_SHIFT, XKB_KEY_q, Some(close_window));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_j, Some(focus_next_handler));

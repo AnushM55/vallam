@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+#
+# wm15-wayrec - toggle area recording for wm15/neuswc via swcsnap + ffmpeg
+# deps: slurp, ffmpeg, notify-send, swcsnap (from neuswc)
+
+set -euo pipefail
+
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/wm15-wayrec"
+PID_FILE="$STATE_DIR/worker.pid"
+STATUS_FILE="$STATE_DIR/status"
+DEBUG_LOG="$STATE_DIR/debug.log"
+
+FPS="${WM15_RECORD_FPS:-60}"
+OUT_DIR="${WM15_RECORD_DIR:-$HOME/vids/recs}"
+MAX_SECONDS="${WM15_RECORD_MAX_SECONDS:-86400}"
+MAX_FRAMES="$((FPS * MAX_SECONDS))"
+
+WORKER_STOP_REQUESTED=0
+WORKER_CLASSIFIED_EXIT=0
+CURRENT_OUTFILE=""
+CURRENT_LOG_FILE=""
+CURRENT_SWCSNAP_PID=""
+CURRENT_FFMPEG_PID=""
+
+mkdir -p "$STATE_DIR"
+
+if [[ "${WM15_RECORD_DEBUG:-0}" == "1" ]]; then
+    set -x
+fi
+
+log_msg() {
+    printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$DEBUG_LOG"
+}
+
+write_status() {
+    local state="$1"
+    local code="${2:-0}"
+    local note="${3:-}"
+
+    {
+        printf 'time=%s\n' "$(date '+%F %T')"
+        printf 'state=%s\n' "$state"
+        printf 'code=%s\n' "$code"
+        printf 'note=%s\n' "$note"
+        if [[ -n "$CURRENT_OUTFILE" ]]; then
+            printf 'file=%s\n' "$CURRENT_OUTFILE"
+        fi
+        if [[ -n "$CURRENT_LOG_FILE" ]]; then
+            printf 'log=%s\n' "$CURRENT_LOG_FILE"
+        fi
+    } > "$STATUS_FILE"
+}
+
+print_status() {
+    local pid=""
+    local last_log=""
+
+    if [[ -f "$PID_FILE" ]]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+    fi
+
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+        echo "recording=yes"
+        echo "pid=$pid"
+    else
+        echo "recording=no"
+    fi
+
+    if [[ -f "$STATUS_FILE" ]]; then
+        cat "$STATUS_FILE"
+    else
+        echo "state=unknown"
+    fi
+
+    last_log="$(ls -1t "$STATE_DIR"/20*.log 2>/dev/null | head -n1 || true)"
+    if [[ -n "$last_log" ]]; then
+        echo "last_capture_log=$last_log"
+    fi
+    echo "debug_log=$DEBUG_LOG"
+}
+
+notify_info() {
+    if [[ "${WM15_DISABLE_NOTIFY:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    if command -v notify-send >/dev/null 2>&1; then
+        if ! notify-send "$@" >/dev/null 2>&1; then
+            log_msg "notify-send failed (ignored)"
+        fi
+    fi
+}
+
+find_swcsnap_bin() {
+    if [[ -n "${WM15_SWCSNAP_BIN:-}" && -x "${WM15_SWCSNAP_BIN}" ]]; then
+        printf '%s\n' "$WM15_SWCSNAP_BIN"
+        return 0
+    fi
+
+    if command -v swcsnap >/dev/null 2>&1; then
+        command -v swcsnap
+        return 0
+    fi
+
+    local script_dir repo_root candidate
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    repo_root="$(cd "$script_dir/.." && pwd)"
+    candidate="$repo_root/deps/neuswc/builddir/extra/swcsnap"
+    if [[ -x "$candidate" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+stream_geometry() {
+    local swcsnap_bin="$1"
+    local info dims
+
+    info="$({ "$swcsnap_bin" record -o /dev/null -n 1 -r 1 >/dev/null; } 2>&1 || true)"
+    dims="$(printf '%s' "$info" | grep -Eo '[0-9]+x[0-9]+' | head -n1 || true)"
+
+    if [[ -z "$dims" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$dims"
+}
+
+handle_term_signal() {
+    WORKER_STOP_REQUESTED=1
+    log_msg "received TERM/INT signal"
+    write_status "stopping" 0 "stop signal"
+
+    if [[ -n "$CURRENT_SWCSNAP_PID" ]]; then
+        kill -TERM "$CURRENT_SWCSNAP_PID" >/dev/null 2>&1 || true
+    fi
+}
+
+handle_err() {
+    local code="$1"
+    local line="$2"
+    local cmd="$3"
+
+    if (( WORKER_CLASSIFIED_EXIT )); then
+        return
+    fi
+
+    WORKER_CLASSIFIED_EXIT=1
+    log_msg "error line=$line code=$code cmd=$cmd"
+    write_status "failed" "$code" "error at line $line"
+    notify_info 'Recording Failed!' "line $line exit $code (see $DEBUG_LOG)" --icon=dialog-error
+    exit "$code"
+}
+
+worker_exit_handler() {
+    local exit_code=$?
+
+    rm -f "$PID_FILE"
+
+    if (( WORKER_STOP_REQUESTED )); then
+        log_msg "worker stopped by request"
+        if (( !WORKER_CLASSIFIED_EXIT )); then
+            write_status "stopped" 0 "stop requested"
+        fi
+        return
+    fi
+
+    if (( WORKER_CLASSIFIED_EXIT )); then
+        return
+    fi
+
+    if (( exit_code != 0 )); then
+        log_msg "worker crashed with exit code $exit_code"
+        write_status "crashed" "$exit_code" "unexpected worker exit"
+        notify_info 'Recording Crashed!' "Exit: $exit_code (see $DEBUG_LOG)" --icon=dialog-error
+    else
+        write_status "idle" 0 "worker exited"
+    fi
+}
+
+run_worker() {
+    trap worker_exit_handler EXIT
+    trap handle_term_signal TERM INT
+    trap 'handle_err $? $LINENO "$BASH_COMMAND"' ERR
+    echo $$ > "$PID_FILE"
+
+    log_msg "worker started pid=$$"
+    write_status "starting" 0 "initializing"
+
+    if ! command -v slurp >/dev/null 2>&1; then
+        WORKER_CLASSIFIED_EXIT=1
+        log_msg "missing dependency: slurp"
+        write_status "failed" 1 "slurp not found"
+        notify_info 'Error: slurp not found' 'Please install slurp for area selection' --icon=dialog-error
+        exit 1
+    fi
+
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        WORKER_CLASSIFIED_EXIT=1
+        log_msg "missing dependency: ffmpeg"
+        write_status "failed" 1 "ffmpeg not found"
+        notify_info 'Error: ffmpeg not found' 'Please install ffmpeg for encoding' --icon=dialog-error
+        exit 1
+    fi
+
+    local swcsnap_bin
+    if ! swcsnap_bin="$(find_swcsnap_bin)"; then
+        WORKER_CLASSIFIED_EXIT=1
+        log_msg "missing dependency: swcsnap"
+        write_status "failed" 1 "swcsnap not found"
+        notify_info 'Error: swcsnap not found' 'Install neuswc swcsnap or set WM15_SWCSNAP_BIN' --icon=dialog-error
+        exit 1
+    fi
+
+    mkdir -p "$OUT_DIR"
+
+    local selection x y w h
+    selection="$(slurp -f "%x %y %w %h" 2>/dev/null || true)"
+    if [[ -z "$selection" ]]; then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "canceled" 0 "no selection"
+        log_msg "selection canceled"
+        notify_info 'Selection Canceled' --icon=dialog-information
+        exit 0
+    fi
+
+    read -r x y w h <<< "$selection"
+    if [[ -z "${w:-}" || -z "${h:-}" || "$w" -le 0 || "$h" -le 0 ]]; then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "canceled" 0 "invalid selection"
+        log_msg "selection invalid: '$selection'"
+        notify_info 'Selection Canceled' --icon=dialog-information
+        exit 0
+    fi
+
+    ((w % 2 == 0)) || w=$((w + 1))
+    ((h % 2 == 0)) || h=$((h + 1))
+
+    local dims stream_w stream_h
+    if ! dims="$(stream_geometry "$swcsnap_bin")"; then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "failed" 1 "could not read swcsnap geometry"
+        log_msg "failed to read swcsnap geometry"
+        notify_info 'Recording Failed!' 'Could not read swcsnap stream geometry' --icon=dialog-error
+        exit 1
+    fi
+
+    stream_w="${dims%x*}"
+    stream_h="${dims#*x}"
+
+    if ((x < 0)); then x=0; fi
+    if ((y < 0)); then y=0; fi
+    if ((x + w > stream_w)); then w=$((stream_w - x)); fi
+    if ((y + h > stream_h)); then h=$((stream_h - y)); fi
+    ((w % 2 == 0)) || w=$((w - 1))
+    ((h % 2 == 0)) || h=$((h - 1))
+
+    if ((w <= 0 || h <= 0)); then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "canceled" 0 "selection out of bounds"
+        log_msg "selection out of bounds"
+        notify_info 'Selection Canceled' --icon=dialog-information
+        exit 0
+    fi
+
+    local current outfile log_file
+    current="$(date +%F_%H-%M-%S)"
+    outfile="$OUT_DIR/$current.mp4"
+    log_file="$STATE_DIR/$current.log"
+
+    CURRENT_OUTFILE="$outfile"
+    CURRENT_LOG_FILE="$log_file"
+
+    : > "$log_file"
+
+    log_msg "recording start file=$outfile src=${stream_w}x${stream_h} crop=${w}x${h}+${x}+${y} fps=$FPS"
+    write_status "recording" 0 "capture active"
+    notify_info 'Started Recording!' --icon=dialog-information
+
+    local raw_pipe swcsnap_pid ffmpeg_pid stop_signal_sent stop_signal_time swcsnap_rc ffmpeg_rc
+    raw_pipe="$STATE_DIR/$current.rawpipe"
+    rm -f "$raw_pipe"
+    mkfifo "$raw_pipe"
+
+    "$swcsnap_bin" record -o - -n "$MAX_FRAMES" -r "$FPS" >"$raw_pipe" 2>>"$log_file" &
+    swcsnap_pid=$!
+    CURRENT_SWCSNAP_PID="$swcsnap_pid"
+
+    ffmpeg -y -f rawvideo -pixel_format bgra -video_size "${stream_w}x${stream_h}" -framerate "$FPS" -i "$raw_pipe" \
+        -vf "crop=${w}:${h}:${x}:${y},format=yuv420p" \
+        -codec:v libx264 -preset slow -crf 20 "$outfile" >>"$log_file" 2>&1 &
+    ffmpeg_pid=$!
+    CURRENT_FFMPEG_PID="$ffmpeg_pid"
+
+    stop_signal_sent=0
+    stop_signal_time=0
+    while kill -0 "$swcsnap_pid" >/dev/null 2>&1 || kill -0 "$ffmpeg_pid" >/dev/null 2>&1; do
+        if (( WORKER_STOP_REQUESTED )) && (( stop_signal_sent == 0 )); then
+            log_msg "stop requested: signaling swcsnap TERM pid=$swcsnap_pid"
+            kill -TERM "$swcsnap_pid" >/dev/null 2>&1 || true
+            stop_signal_sent=1
+            stop_signal_time=$SECONDS
+        fi
+
+        if (( WORKER_STOP_REQUESTED )) && (( stop_signal_sent == 1 )); then
+            if kill -0 "$swcsnap_pid" >/dev/null 2>&1 && (( SECONDS - stop_signal_time >= 3 )); then
+                log_msg "swcsnap did not stop after TERM, sending KILL pid=$swcsnap_pid"
+                kill -KILL "$swcsnap_pid" >/dev/null 2>&1 || true
+                stop_signal_sent=2
+            fi
+        fi
+
+        sleep 0.1
+    done
+
+    swcsnap_rc=0
+    ffmpeg_rc=0
+    wait "$swcsnap_pid" || swcsnap_rc=$?
+    wait "$ffmpeg_pid" || ffmpeg_rc=$?
+
+    CURRENT_SWCSNAP_PID=""
+    CURRENT_FFMPEG_PID=""
+    rm -f "$raw_pipe"
+
+    log_msg "recorder exits: swcsnap=$swcsnap_rc ffmpeg=$ffmpeg_rc"
+
+    if (( ffmpeg_rc != 0 )); then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "failed" "$ffmpeg_rc" "ffmpeg exited with error"
+        log_msg "recording failed: ffmpeg exit $ffmpeg_rc (see $log_file)"
+        notify_info 'Recording Failed!' "Encoder error (see $log_file)" --icon=dialog-error
+        exit "$ffmpeg_rc"
+    fi
+
+    if [[ -f "$outfile" && -s "$outfile" ]]; then
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "saved" 0 "recording saved"
+        log_msg "recording saved file=$outfile"
+        notify_info 'Recording Saved!' "File: ${current}.mp4" --icon=dialog-information
+
+        if command -v ripdrag >/dev/null 2>&1; then
+            ripdrag -x "$outfile" >/dev/null 2>&1 &
+        elif command -v xdg-open >/dev/null 2>&1; then
+            xdg-open "$OUT_DIR" >/dev/null 2>&1 &
+        fi
+    else
+        WORKER_CLASSIFIED_EXIT=1
+        write_status "failed" 1 "empty output file"
+        log_msg "recording failed: empty/missing output file (see $log_file)"
+        notify_info 'Recording Failed!' "See log: $log_file" --icon=dialog-error
+        exit 1
+    fi
+}
+
+start_worker() {
+    log_msg "start requested"
+    write_status "starting" 0 "launching worker"
+    nohup "$0" --worker >/dev/null 2>&1 &
+}
+
+stop_worker() {
+    local pid
+    pid="$(cat "$PID_FILE")"
+
+    if kill -0 "$pid" >/dev/null 2>&1; then
+        log_msg "stop requested for pid=$pid"
+        write_status "stopping" 0 "requested stop for pid $pid"
+        kill "$pid" >/dev/null 2>&1 || true
+        notify_info 'Stopped Recording!' --icon=dialog-information
+        return
+    fi
+
+    rm -f "$PID_FILE"
+}
+
+if [[ "${1:-}" == "--worker" ]]; then
+    run_worker
+    exit 0
+fi
+
+if [[ "${1:-}" == "--status" ]]; then
+    print_status
+    exit 0
+fi
+
+if [[ -f "$PID_FILE" ]]; then
+    if kill -0 "$(cat "$PID_FILE" 2>/dev/null || echo 0)" >/dev/null 2>&1; then
+        stop_worker
+    else
+        rm -f "$PID_FILE"
+        start_worker
+    fi
+else
+    start_worker
+fi
