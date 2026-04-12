@@ -352,6 +352,94 @@ fn focus_prev(screen: *mut Screen, window: *mut Window) {
     }
 }
 
+fn adjacent_window(screen: *mut Screen, window: *mut Window, forward: bool) -> *mut Window {
+    if screen.is_null() || window.is_null() {
+        return ptr::null_mut();
+    }
+
+    unsafe {
+        let s = &*screen;
+        if s.windows.len() <= 1 {
+            return ptr::null_mut();
+        }
+
+        for (i, &w) in s.windows.iter().enumerate() {
+            if w == window {
+                let index = if forward {
+                    (i + 1) % s.windows.len()
+                } else if i > 0 {
+                    i - 1
+                } else {
+                    s.windows.len() - 1
+                };
+
+                return s.windows[index];
+            }
+        }
+    }
+
+    ptr::null_mut()
+}
+
+fn pan_screen_to_window(screen: *mut Screen, target: *mut Window) {
+    if screen.is_null() || target.is_null() {
+        return;
+    }
+
+    unsafe {
+        if (*target).fullscreen {
+            return;
+        }
+
+        let mut target_geo = swc_rectangle {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        };
+
+        if !swc_window_get_geometry((*target).swc, &mut target_geo) {
+            return;
+        }
+
+        let usable = &(*(*screen).swc).usable_geometry;
+        let screen_center_x = usable.x + (usable.width / 2) as i32;
+        let screen_center_y = usable.y + (usable.height / 2) as i32;
+        let target_center_x = target_geo.x + (target_geo.width / 2) as i32;
+        let target_center_y = target_geo.y + (target_geo.height / 2) as i32;
+
+        let dx = screen_center_x - target_center_x;
+        let dy = screen_center_y - target_center_y;
+
+        if dx == 0 && dy == 0 {
+            return;
+        }
+
+        let s = &*screen;
+        for &win_ptr in &s.windows {
+            if win_ptr.is_null() {
+                continue;
+            }
+
+            let w = &*win_ptr;
+            if w.fullscreen {
+                continue;
+            }
+
+            let mut geo = swc_rectangle {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            };
+
+            if swc_window_get_geometry(w.swc, &mut geo) {
+                swc_window_set_position(w.swc, geo.x + dx, geo.y + dy);
+            }
+        }
+    }
+}
+
 // --- Callbacks ---
 
 unsafe extern "C" fn screen_usable_geometry_changed(data: *mut c_void) {
@@ -839,30 +927,52 @@ unsafe extern "C" fn zoom_reset(_data: *mut c_void, _time: u32, _value: u32, sta
     }
 }
 
-unsafe extern "C" fn stack_window_up(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+unsafe extern "C" fn pan_to_next_window(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
     if state != 1 {
         return;
     }
 
     let focused = get_focused_window();
-    if !focused.is_null() {
-        unsafe {
-            swc_window_stack((*focused).swc, -1);
-        }
+    if focused.is_null() {
+        return;
     }
+
+    let screen = unsafe { (*focused).screen };
+    if screen.is_null() {
+        return;
+    }
+
+    let target = adjacent_window(screen, focused, true);
+    if target.is_null() {
+        return;
+    }
+
+    focus(target);
+    pan_screen_to_window(screen, target);
 }
 
-unsafe extern "C" fn stack_window_down(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+unsafe extern "C" fn pan_to_prev_window(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
     if state != 1 {
         return;
     }
 
     let focused = get_focused_window();
-    if !focused.is_null() {
-        unsafe {
-            swc_window_stack((*focused).swc, 1);
-        }
+    if focused.is_null() {
+        return;
     }
+
+    let screen = unsafe { (*focused).screen };
+    if screen.is_null() {
+        return;
+    }
+
+    let target = adjacent_window(screen, focused, false);
+    if target.is_null() {
+        return;
+    }
+
+    focus(target);
+    pan_screen_to_window(screen, target);
 }
 
 fn add_key_binding(modifiers: u32, key: u32, handler: swc_binding_handler) {
@@ -926,12 +1036,12 @@ fn main() {
     add_key_binding(
         SWC_MOD_LOGO | SWC_MOD_SHIFT,
         XKB_KEY_j,
-        Some(stack_window_up),
+        Some(pan_to_next_window),
     );
     add_key_binding(
         SWC_MOD_LOGO | SWC_MOD_SHIFT,
         XKB_KEY_k,
-        Some(stack_window_down),
+        Some(pan_to_prev_window),
     );
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_equal, Some(zoom_in));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_minus, Some(zoom_out));
