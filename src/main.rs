@@ -348,7 +348,7 @@ const MOVE_STEP: i32 = 64;
 const RESIZE_STEP: i32 = 48;
 const MIN_WINDOW_WIDTH: i32 = 120;
 const MIN_WINDOW_HEIGHT: i32 = 90;
-const DEFAULT_BACKGROUND_COLOR: u32 = 0xff101418;
+const DEFAULT_BACKGROUND_COLOR: u32 = 0xffc8a2ff;
 
 fn parse_color_argb(value: &str) -> Option<u32> {
     let cleaned = value.trim().trim_start_matches('#');
@@ -363,7 +363,7 @@ fn parse_color_argb(value: &str) -> Option<u32> {
 }
 
 fn configured_background_color() -> u32 {
-    std::env::var("WM15_BG")
+    std::env::var("VALLAM_BG")
         .ok()
         .as_deref()
         .and_then(parse_color_argb)
@@ -697,7 +697,7 @@ unsafe extern "C" fn new_device(device: *mut libinput_device) {
     }
 
     if unsafe { libinput_device_config_dwt_is_available(device) } != 0 {
-        let dwt_enabled = std::env::var("WM15_TOUCHPAD_DWT")
+        let dwt_enabled = std::env::var("VALLAM_TOUCHPAD_DWT")
             .ok()
             .map(|v| {
                 let v = v.trim().to_ascii_lowercase();
@@ -714,7 +714,7 @@ unsafe extern "C" fn new_device(device: *mut libinput_device) {
         let _ = unsafe { libinput_device_config_dwt_set_enabled(device, dwt_state) };
     }
 
-    println!("wm15: configured touchpad \"{}\"", name);
+    println!("vallam: configured touchpad \"{}\"", name);
 }
 
 unsafe extern "C" fn new_window(swc: *mut swc_window) {
@@ -938,11 +938,11 @@ unsafe extern "C" fn toggle_screen_recording(
         return;
     }
 
-    let command = std::env::var("WM15_WAYREC_CMD").unwrap_or_else(|_| {
-        if Path::new("scripts/wm15-wayrec").exists() {
-            "scripts/wm15-wayrec".to_string()
+    let command = std::env::var("VALLAM_WAYREC_CMD").unwrap_or_else(|_| {
+        if Path::new("scripts/vallam-wayrec").exists() {
+            "scripts/vallam-wayrec".to_string()
         } else {
-            "wm15-wayrec".to_string()
+            "vallam-wayrec".to_string()
         }
     });
 
@@ -1236,7 +1236,7 @@ fn main() {
 
     add_button_binding(SWC_MOD_LOGO, BTN_RIGHT, Some(mouse_resize_handler));
 
-    println!("wm15: running on {}", socket_str.to_str().unwrap());
+    println!("vallam: running on {}", socket_str.to_str().unwrap());
     unsafe {
         wl_display_run(display);
         wl_display_destroy(display);

@@ -1,28 +1,38 @@
-# WM 15
-- A [neuswc](https://git.sr.ht/~shrub900/neuswc) based window manager written in rust
-- Warning : Work in progress
+# Vallam
+- A [neuswc](https://git.sr.ht/~shrub900/neuswc) based window manager written in Rust.
+- Warning: work in progress.
 
-# Installation 
-- You need to have cargo installed
-- run `make` in project root
-- optional install: `sudo make install` (installs `wm15`, `wm15-wayrec`, `swcsnap`)
+## Dependencies
 
-# Screen recording
-- Keybinding: `Super+Shift+r` toggles recording.
-- Recorder uses `wm15-wayrec` (default command; override with `WM15_WAYREC_CMD`).
-- `wm15-wayrec` auto-detects `swcsnap`; override path with `WM15_SWCSNAP_BIN`.
-- Top-level behavior mirrors your `wayrec` script: toggle start/stop, select area with `slurp`, save mp4 to `$HOME/vids/recs`, notifications.
-- Backend capture uses neuswc `swcsnap` + `ffmpeg` encoding.
-- Dependencies: `slurp`, `ffmpeg`, `notify-send` (optional), and `swcsnap`.
-- Status check: `wm15-wayrec --status` (shows running state + last status/log path).
-- Crash diagnostics: logs in `${XDG_RUNTIME_DIR:-/tmp}/wm15-wayrec/` (`status`, `debug.log`, `*.log`).
-- If notifications are unavailable in your session, set `WM15_DISABLE_NOTIFY=1`.
+### Build dependencies
+- `rust` / `cargo`
+- `meson`
+- `ninja`
+- System libraries required by `neuswc`
 
-# Etymology
+### Runtime dependencies
+- `swc-launch` (used to start the compositor)
+- `swcsnap` (built from `neuswc` by `make`)
+- `slurp` (for area selection in recording)
+- `ffmpeg` (for encoding recordings)
+- `notify-send` (optional, for desktop notifications)
 
-![XKCD - 927](https://imgs.xkcd.com/comics/standards.png)
+## Installation
+- Run `make` in the project root.
+- Optional install: `sudo make install` (installs `vallam`, `vallam-wayrec`, `swcsnap`).
 
-# STATUS
+## Running the project
+(Usually called **Usage** or **Running** in READMEs.)
+
+Start Vallam through `swc-launch`:
+
+- Without installing:
+  - `make`
+  - `swc-launch ./target/release/vallam`
+- After installing:
+  - `swc-launch vallam`
+
+## STATUS
 
 ![Recording](./assets/recording.gif)
 

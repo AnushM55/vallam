@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# wm15-wayrec - toggle area recording for wm15/neuswc via swcsnap + ffmpeg
+# vallam-wayrec - toggle area recording for vallam/neuswc via swcsnap + ffmpeg
 # deps: slurp, ffmpeg, notify-send, swcsnap (from neuswc)
 
 set -euo pipefail
 
-STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/wm15-wayrec"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}/vallam-wayrec"
 PID_FILE="$STATE_DIR/worker.pid"
 STATUS_FILE="$STATE_DIR/status"
 DEBUG_LOG="$STATE_DIR/debug.log"
 
-FPS="${WM15_RECORD_FPS:-60}"
-OUT_DIR="${WM15_RECORD_DIR:-$HOME/vids/recs}"
-MAX_SECONDS="${WM15_RECORD_MAX_SECONDS:-86400}"
+FPS="${VALLAM_RECORD_FPS:-60}"
+OUT_DIR="${VALLAM_RECORD_DIR:-$HOME/vids/recs}"
+MAX_SECONDS="${VALLAM_RECORD_MAX_SECONDS:-86400}"
 MAX_FRAMES="$((FPS * MAX_SECONDS))"
 
 WORKER_STOP_REQUESTED=0
@@ -24,7 +24,7 @@ CURRENT_FFMPEG_PID=""
 
 mkdir -p "$STATE_DIR"
 
-if [[ "${WM15_RECORD_DEBUG:-0}" == "1" ]]; then
+if [[ "${VALLAM_RECORD_DEBUG:-0}" == "1" ]]; then
     set -x
 fi
 
@@ -80,7 +80,7 @@ print_status() {
 }
 
 notify_info() {
-    if [[ "${WM15_DISABLE_NOTIFY:-0}" == "1" ]]; then
+    if [[ "${VALLAM_DISABLE_NOTIFY:-0}" == "1" ]]; then
         return 0
     fi
 
@@ -92,8 +92,8 @@ notify_info() {
 }
 
 find_swcsnap_bin() {
-    if [[ -n "${WM15_SWCSNAP_BIN:-}" && -x "${WM15_SWCSNAP_BIN}" ]]; then
-        printf '%s\n' "$WM15_SWCSNAP_BIN"
+    if [[ -n "${VALLAM_SWCSNAP_BIN:-}" && -x "${VALLAM_SWCSNAP_BIN}" ]]; then
+        printf '%s\n' "$VALLAM_SWCSNAP_BIN"
         return 0
     fi
 
@@ -210,7 +210,7 @@ run_worker() {
         WORKER_CLASSIFIED_EXIT=1
         log_msg "missing dependency: swcsnap"
         write_status "failed" 1 "swcsnap not found"
-        notify_info 'Error: swcsnap not found' 'Install neuswc swcsnap or set WM15_SWCSNAP_BIN' --icon=dialog-error
+        notify_info 'Error: swcsnap not found' 'Install neuswc swcsnap or set VALLAM_SWCSNAP_BIN' --icon=dialog-error
         exit 1
     fi
 

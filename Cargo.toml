@@ -1,8 +1,9 @@
 [package]
-name = "wm15"
+name = "vallam"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [[bin]]
-name = "wm15"
+name = "vallam"
 path = "src/main.rs"
