@@ -21,9 +21,7 @@
 - Run `make` in the project root.
 - Optional install: `sudo make install` (installs `vallam`, `vallam-wayrec`, `swcsnap`).
 
-## Running the project
-(Usually called **Usage** or **Running** in READMEs.)
-
+## Running
 Start Vallam through `swc-launch`:
 
 - Without installing:
