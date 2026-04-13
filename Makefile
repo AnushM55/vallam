@@ -21,7 +21,10 @@ $(NEUSWC_DIR):
 $(NEUSWC_BUILDDIR)/build.ninja: $(NEUSWC_DIR)
 	$(MESON) setup $(NEUSWC_DIR) $(NEUSWC_BUILDDIR)
 
-install: all
+install:
+	@test -x target/release/vallam || $(MAKE) all
+	@test -x $(NEUSWC_BUILDDIR)/extra/swcsnap || $(MAKE) libswc
+	@test -f $(NEUSWC_BUILDDIR)/libswc/libswc.so || $(MAKE) libswc
 	install -Dm755 target/release/vallam $(DESTDIR)$(PREFIX)/bin/vallam
 	install -Dm755 scripts/vallam-wayrec $(DESTDIR)$(PREFIX)/bin/vallam-wayrec
 	install -Dm755 $(NEUSWC_BUILDDIR)/extra/swcsnap $(DESTDIR)$(PREFIX)/bin/swcsnap

@@ -38,6 +38,8 @@ fn main() {
     // System libs
     println!("cargo:rustc-link-lib=dylib=wayland-server");
 
-    // Tell cargo to rerun if build.rs changes
+    // Tell cargo when build script outputs may need to change
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=SWC_LIBDIR");
+    println!("cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR");
 }
