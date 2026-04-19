@@ -154,6 +154,12 @@ pub const XKB_KEY_minus: u32 = 0x002d;
 pub const XKB_KEY_equal: u32 = 0x003d;
 pub const XKB_KEY_0: u32 = 0x0030;
 
+pub const XKB_KEY_XF86MonBrightnessUp: u32 = 0x1008ff02;
+pub const XKB_KEY_XF86MonBrightnessDown: u32 = 0x1008ff03;
+pub const XKB_KEY_XF86AudioLowerVolume: u32 = 0x1008ff11;
+pub const XKB_KEY_XF86AudioMute: u32 = 0x1008ff12;
+pub const XKB_KEY_XF86AudioRaiseVolume: u32 = 0x1008ff13;
+
 // --- FFI functions ---
 
 #[link(name = "swc")]

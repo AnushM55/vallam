@@ -202,6 +202,95 @@ fn update_fullscreen_windows(screen: *mut Screen) {
     }
 }
 
+fn rectangles_overlap(a: swc_rectangle, b: swc_rectangle) -> bool {
+    let a_right = a.x.saturating_add(a.width as i32);
+    let a_bottom = a.y.saturating_add(a.height as i32);
+    let b_right = b.x.saturating_add(b.width as i32);
+    let b_bottom = b.y.saturating_add(b.height as i32);
+
+    a.x < b_right && a_right > b.x && a.y < b_bottom && a_bottom > b.y
+}
+
+fn spawn_overlaps_existing_windows(candidate: swc_rectangle, existing: &[swc_rectangle]) -> bool {
+    existing
+        .iter()
+        .copied()
+        .any(|occupied| rectangles_overlap(candidate, occupied))
+}
+
+fn collect_spawn_blocking_geometries(
+    screen: *mut Screen,
+    excluding: *mut Window,
+) -> Vec<swc_rectangle> {
+    let mut geometries = Vec::new();
+
+    if screen.is_null() {
+        return geometries;
+    }
+
+    unsafe {
+        for &win_ptr in &(*screen).windows {
+            if win_ptr.is_null() || win_ptr == excluding {
+                continue;
+            }
+
+            if let Some(geo) = current_window_geometry(win_ptr) {
+                geometries.push(geo);
+            }
+        }
+    }
+
+    geometries
+}
+
+fn resolve_spawn_geometry(
+    screen: *mut Screen,
+    window: *mut Window,
+    preferred: swc_rectangle,
+) -> swc_rectangle {
+    let existing = collect_spawn_blocking_geometries(screen, window);
+    if existing.is_empty() || !spawn_overlaps_existing_windows(preferred, &existing) {
+        return preferred;
+    }
+
+    let step_x = (preferred.width as i32 / 3).max(80);
+    let step_y = (preferred.height as i32 / 3).max(64);
+
+    for radius in 1..=16i32 {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs() != radius && dy.abs() != radius {
+                    continue;
+                }
+
+                let candidate = swc_rectangle {
+                    x: preferred.x.saturating_add(dx.saturating_mul(step_x)),
+                    y: preferred.y.saturating_add(dy.saturating_mul(step_y)),
+                    width: preferred.width,
+                    height: preferred.height,
+                };
+
+                if !spawn_overlaps_existing_windows(candidate, &existing) {
+                    return candidate;
+                }
+            }
+        }
+    }
+
+    let rightmost = existing
+        .iter()
+        .map(|geo| geo.x.saturating_add(geo.width as i32))
+        .max()
+        .unwrap_or(preferred.x);
+
+    swc_rectangle {
+        x: rightmost.saturating_add(48),
+        y: preferred.y,
+        width: preferred.width,
+        height: preferred.height,
+    }
+}
+
 fn place_window(screen: *mut Screen, window: *mut Window) {
     if screen.is_null() || window.is_null() {
         return;
@@ -222,36 +311,50 @@ fn place_window(screen: *mut Screen, window: *mut Window) {
         let offset = (next_spawn_index() % cycle) as i32 * step as i32;
 
         let focused = get_focused_window();
-        if !focused.is_null() && focused != window && (*focused).screen == screen {
-            let fw = &*focused;
-            if !fw.fullscreen {
-                if let Some(active_geo) = current_window_geometry(focused) {
-                    let gap = 36;
-                    let x = active_geo.x + active_geo.width as i32 + gap + offset;
-                    let y = active_geo.y + offset / 2;
-
-                    let geo = swc_rectangle {
-                        x,
-                        y,
+        let preferred_geo =
+            if !focused.is_null() && focused != window && (*focused).screen == screen {
+                let fw = &*focused;
+                if !fw.fullscreen {
+                    if let Some(active_geo) = current_window_geometry(focused) {
+                        let gap = 36;
+                        swc_rectangle {
+                            x: active_geo.x + active_geo.width as i32 + gap + offset,
+                            y: active_geo.y + offset / 2,
+                            width,
+                            height,
+                        }
+                    } else {
+                        let base_x = usable.x + ((usable.width - width) / 2) as i32;
+                        let base_y = usable.y + ((usable.height - height) / 2) as i32;
+                        swc_rectangle {
+                            x: base_x + offset,
+                            y: base_y + offset,
+                            width,
+                            height,
+                        }
+                    }
+                } else {
+                    let base_x = usable.x + ((usable.width - width) / 2) as i32;
+                    let base_y = usable.y + ((usable.height - height) / 2) as i32;
+                    swc_rectangle {
+                        x: base_x + offset,
+                        y: base_y + offset,
                         width,
                         height,
-                    };
-
-                    swc_window_set_geometry((*window).swc, &geo);
-                    cache_window_geometry(window, geo);
-                    return;
+                    }
                 }
-            }
-        }
+            } else {
+                let base_x = usable.x + ((usable.width - width) / 2) as i32;
+                let base_y = usable.y + ((usable.height - height) / 2) as i32;
+                swc_rectangle {
+                    x: base_x + offset,
+                    y: base_y + offset,
+                    width,
+                    height,
+                }
+            };
 
-        let base_x = usable.x + ((usable.width - width) / 2) as i32;
-        let base_y = usable.y + ((usable.height - height) / 2) as i32;
-        let geo = swc_rectangle {
-            x: base_x + offset,
-            y: base_y + offset,
-            width,
-            height,
-        };
+        let geo = resolve_spawn_geometry(screen, window, preferred_geo);
 
         swc_window_set_geometry((*window).swc, &geo);
         cache_window_geometry(window, geo);
@@ -914,6 +1017,60 @@ unsafe extern "C" fn resize_shorter(_data: *mut c_void, _time: u32, _value: u32,
     }
 }
 
+fn run_shell_command(command: &str) {
+    Command::new("sh").arg("-c").arg(command).spawn().ok();
+}
+
+unsafe extern "C" fn brightness_up(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("VALLAM_BRIGHTNESS_UP_CMD")
+        .unwrap_or_else(|_| "brightnessctl set +1%".to_string());
+    run_shell_command(&command);
+}
+
+unsafe extern "C" fn brightness_down(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("VALLAM_BRIGHTNESS_DOWN_CMD")
+        .unwrap_or_else(|_| "brightnessctl set 1%-".to_string());
+    run_shell_command(&command);
+}
+
+unsafe extern "C" fn volume_up(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("VALLAM_VOLUME_UP_CMD")
+        .unwrap_or_else(|_| "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+".to_string());
+    run_shell_command(&command);
+}
+
+unsafe extern "C" fn volume_down(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("VALLAM_VOLUME_DOWN_CMD")
+        .unwrap_or_else(|_| "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".to_string());
+    run_shell_command(&command);
+}
+
+unsafe extern "C" fn volume_mute_toggle(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
+    if state != 1 {
+        return;
+    }
+
+    let command = std::env::var("VALLAM_VOLUME_MUTE_CMD")
+        .unwrap_or_else(|_| "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".to_string());
+    run_shell_command(&command);
+}
+
 unsafe extern "C" fn spawn_st(_data: *mut c_void, _time: u32, _value: u32, state: u32) {
     if state != 1 {
         return;
@@ -1220,6 +1377,12 @@ fn main() {
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_equal, Some(zoom_in));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_minus, Some(zoom_out));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_0, Some(zoom_reset));
+
+    add_key_binding(0, XKB_KEY_XF86MonBrightnessUp, Some(brightness_up));
+    add_key_binding(0, XKB_KEY_XF86MonBrightnessDown, Some(brightness_down));
+    add_key_binding(0, XKB_KEY_XF86AudioRaiseVolume, Some(volume_up));
+    add_key_binding(0, XKB_KEY_XF86AudioLowerVolume, Some(volume_down));
+    add_key_binding(0, XKB_KEY_XF86AudioMute, Some(volume_mute_toggle));
 
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_m, Some(key_move_handler));
     add_key_binding(SWC_MOD_LOGO, XKB_KEY_r, Some(key_resize_handler));
